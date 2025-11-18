@@ -16,7 +16,8 @@ from collections import defaultdict
 LOCK = threading.Lock()
 INF = 999999  # treat as infinity for printing/computation
 
-def now(): return time.time()
+def now():
+    return time.time()
 
 class DVServer:
     def __init__(self, topo_file, update_interval):
@@ -56,137 +57,63 @@ class DVServer:
         self.periodic_thread = None
         self.timeout_thread = None
 
-    def parse_topology(self):
-        # Support two common file styles:
-        # style A (example): first two lines num-servers, num-neighbors then server entries then link lines
-        # style B: all necessary lines (server lines and neighbor cost lines).
-        lines = []
-        with open(self.topo_file) as f:
-            for raw in f:
-                s = raw.strip()
-                if not s: continue
-                # ignore comment lines starting with #
-                if s.startswith('#'): continue
-                tokens = s.split()
-                lines.append(tokens)
+def parse_topology(self):
+    with open(self.topo_file) as f:
+        lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith('#')
+        ]
 
-        # Heuristic: find all 3-token lines that look like server entries: (id ip port)
-        # and all 3-token lines that look like link entries: (id1 id2 cost)
-        # We'll build servers dict from any token where token[1] is an IP-like token (contains '.')
-        server_lines = []
-        link_lines = []
-        counts = []
-        for tokens in lines:
-            if len(tokens) >= 1 and all(tok.isdigit() for tok in tokens[:1]):
-                counts.append(tokens)
-            # server-like: second token has a dot (ip)
-            if len(tokens) >= 3 and '.' in tokens[1]:
-                server_lines.append(tokens[:3])
-            elif len(tokens) >= 3:
-                # numeric triple -> link or maybe server with numeric ip (unlikely)
-                # decide by whether middle token contains a dot; else treat as link
-                link_lines.append(tokens[:3])
+    # 1. extract num servers and neighbors
+    num_servers = int(lines[0])
+    num_neighbors = int(lines[1])
 
-        # If server_lines is empty but there were counts and then server lines after counts, try original structure:
-        if not server_lines and len(lines) >= 3:
-            # maybe lines[2..2+num_servers) are server entries
-            try:
-                num_servers = int(lines[0][0])
-                num_neighbors = int(lines[1][0]) if len(lines) >= 2 else 0
-                # servers likely start at index 2
-                for i in range(2, 2 + num_servers):
-                    if i < len(lines):
-                        server_lines.append(lines[i][:3])
-                # remaining are links
-                for j in range(2 + num_servers, len(lines)):
-                    if len(lines[j]) >= 3:
-                        link_lines.append(lines[j][:3])
-            except Exception:
-                pass
+    # 2. parse server entries
+    self.servers = {}
+    for i in range(2, 2 + num_servers):
+        sid, ip, port = lines[i].split()
+        sid = int(sid)
+        self.servers[sid] = {"ip": ip, "port": int(port)}
 
-        # Build servers map
-        for tok in server_lines:
-            sid = int(tok[0])
-            ip = tok[1]
-            port = int(tok[2])
-            self.servers[sid] = {'ip': ip, 'port': port}
+    # 3. determine my_id via deterministic port-binding
+    for sid, info in self.servers.items():
+        try:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            test_sock.bind((info["ip"], info["port"]))
+            test_sock.close()
 
-        # Build link lines as neighbor costs (bidirectional)
-        for tok in link_lines:
-            try:
-                a = int(tok[0]); b = int(tok[1]); c = tok[2]
-                if c.lower() == 'inf' or c.lower() == 'infty':
-                    cost = INF
-                else:
-                    cost = int(c)
-                # store symmetric in adjacency (but only keep local neighbors later)
-                # We'll set neighbor_costs later using my_id
-                # For now, record in an adjacency map in case this file is global
-                # We'll keep it in a temporary structure
-                # use adjacency dict on self for convenience
-                if not hasattr(self, 'adj'):
-                    self.adj = {}
-                self.adj[(a,b)] = cost
-                self.adj[(b,a)] = cost
-            except Exception:
-                continue
+            self.my_id = sid
+            self.my_ip = info["ip"]
+            self.my_port = info["port"]
+            break
+        except OSError:
+            continue
 
-        # Now detect which server is "me" by matching one server's ip and port with local host
-        # But the assignment expects the host to find its own entry in the topology file without changing the file.
-        # We'll try to match by our local machine IPs; as fallback assume the file's server list contains an ID and we
-        # prompt the user to choose (but we cannot prompt per instruction). So use environment: choose the first server entry
-        # whose ip is local or 127.0.0.1 or '' ; otherwise pick the first server line.
-        # We'll attempt to bind to the port of the chosen server id.
-        # Choose my_id as the server entry that matches one of the local host IPs (or '127.0.0.1').
-        local_ips = self.get_local_ips()
-        chosen = None
-        for sid,info in self.servers.items():
-            if info['ip'] in local_ips or info['ip'] == '127.0.0.1' or info['ip'].startswith('0.0.0.0'):
-                chosen = (sid, info)
-                break
-        if not chosen:
-            # fallback: pick the first server entry
-            if len(self.servers) == 0:
-                raise RuntimeError("Topology file didn't contain any server entries.")
-            sid = next(iter(self.servers))
-            chosen = (sid, self.servers[sid])
+    if self.my_id is None:
+        raise RuntimeError("Unable to match any server entry to this host.")
 
-        self.my_id = int(chosen[0])
-        self.my_ip = chosen[1]['ip']
-        self.my_port = int(chosen[1]['port'])
+    # 4. parse neighbor cost lines
+    self.neighbor_costs = {}
+    self.neighbors = set()
 
-        # Build neighbor costs based on adjacency if available
-        self.neighbor_costs = {}
-        if hasattr(self, 'adj'):
-            for (a,b),cost in list(self.adj.items()):
-                if a == self.my_id:
-                    self.neighbor_costs[b] = cost
-                    self.neighbors.add(b)
+    base = 2 + num_servers
+    for i in range(base, base + num_neighbors):
+        myid, neigh, cost = lines[i].split()
+        myid = int(myid)
+        neigh = int(neigh)
+        cost = float('inf') if cost.lower() == "inf" else int(cost)
 
-        # If neighbor lines were given explicitly as server's neighbor entries in the file style,
-        # e.g., some files list only neighbors for the host, handle that: look for any triple whose first token == my_id.
-        for tokens in lines:
-            if len(tokens) >= 3:
-                try:
-                    a = int(tokens[0])
-                    b = tokens[1]
-                except:
-                    continue
-                # tokens are ambiguous; detect patterns like "1 2 7" meaning my_id neighbor cost
-                if len(tokens) == 3:
-                    try:
-                        a = int(tokens[0]); b = int(tokens[1]); c = tokens[2]
-                        if a == self.my_id:
-                            cost = INF if c.lower()=='inf' else int(c)
-                            self.neighbor_costs[b] = cost
-                            self.neighbors.add(b)
-                    except Exception:
-                        pass
+        if myid != self.my_id:
+            continue
 
-        # If we have neighbors but their server infos (IPs) are missing, we still may have them in servers map
-        # Keep last_heard initial as current time for neighbors
-        for n in self.neighbors:
-            self.last_heard[n] = now()
+        self.neighbor_costs[neigh] = cost
+        self.neighbors.add(neigh)
+
+    # 5. initialize last_heard
+    now_ts = now()
+    for n in self.neighbors:
+        self.last_heard[n] = now_ts
 
     def get_local_ips(self):
         # try to get host IP and localhost forms
