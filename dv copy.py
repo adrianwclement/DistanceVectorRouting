@@ -187,23 +187,6 @@ class DVServer:
                 continue
 
     def handle_incoming(self, msg, addr):
-        # NEW: process link_update control message BEFORE normal DV handling
-        if msg.get("type") == "link_update":
-            try:
-                a = int(msg["from"])
-            except Exception:
-                return
-            try:
-                cost = int(msg["cost"]) if msg["cost"] != "inf" else INF
-            except Exception:
-                cost = INF
-            with LOCK:
-                self.neighbor_costs[a] = cost
-                self.neighbors.add(a)
-                self.last_heard.setdefault(a, now())
-                self.routing_table[a] = {"cost": cost, "next_hop": a if cost < INF else -1}
-            return
-
         # Expecting JSON as per our format
         try:
             sender_id = int(msg.get('sender_id'))
@@ -358,21 +341,6 @@ class DVServer:
                             self.neighbors.add(b)
                             self.last_heard.setdefault(b, now())
                             self.routing_table[b] = {'cost': cost, 'next_hop': b if cost < INF else -1}
-
-                        # NEW: send a link_update to server b
-                        info = self.servers.get(b)
-                        if info:
-                            control = {
-                                "type": "link_update",
-                                "from": a,
-                                "to": b,
-                                "cost": cost
-                            }
-                            try:
-                                self.sock.sendto(json.dumps(control).encode(), (info["ip"], info["port"]))
-                            except:
-                                pass
-
                         print(f"{cmd} SUCCESS")
                     elif b == self.my_id:
                         with LOCK:
@@ -380,21 +348,6 @@ class DVServer:
                             self.neighbors.add(a)
                             self.last_heard.setdefault(a, now())
                             self.routing_table[a] = {'cost': cost, 'next_hop': a if cost < INF else -1}
-
-                        # NEW: send a link_update to server a
-                        info = self.servers.get(a)
-                        if info:
-                            control = {
-                                "type": "link_update",
-                                "from": b,
-                                "to": a,
-                                "cost": cost
-                            }
-                            try:
-                                self.sock.sendto(json.dumps(control).encode(), (info["ip"], info["port"]))
-                            except:
-                                pass
-
                         print(f"{cmd} SUCCESS")
                     else:
                         # assignment says command is issued to both servers, so if this server isn't one of them it's error
@@ -404,7 +357,6 @@ class DVServer:
                     # send routing update to neighbors right away
                     self.send_to_neighbors()
                     print(f"{cmd} SUCCESS")
-                    
                 elif parts[0].lower() == 'packets':
                     with LOCK:
                         val = self.packets_received
@@ -443,7 +395,7 @@ class DVServer:
                             print(f"{cmd} SUCCESS")
                         else:
                             print(f"{cmd} ERROR: {x} is not a neighbor")
-
+                            
                 elif parts[0].lower() == 'crash':
                     # close all connections. Set all neighbor costs to INF and exit
                     with LOCK:
