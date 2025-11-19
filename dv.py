@@ -85,22 +85,13 @@ class DVServer:
             sid = int(sid)
             self.servers[sid] = {"ip": ip, "port": int(port)}
 
-        # 3. determine my_id via deterministic port-binding
-        for sid, info in self.servers.items():
-            try:
-                test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                test_sock.bind((info["ip"], info["port"]))
-                test_sock.close()
-
-                self.my_id = sid
-                self.my_ip = info["ip"]
-                self.my_port = info["port"]
-                break
-            except OSError:
-                continue
-
-        if self.my_id is None:
-            raise RuntimeError("Unable to match any server entry to this host.")
+        # 3. determine my_id from the neighbor section
+        base = 2 + num_servers
+        first_neighbor_line = lines[base]
+        my_id = int(first_neighbor_line.split()[0])
+        self.my_id = my_id
+        self.my_ip = self.servers[my_id]["ip"]
+        self.my_port = self.servers[my_id]["port"]
 
         # 4. parse neighbor cost lines
         self.neighbor_costs = {}
@@ -158,7 +149,8 @@ class DVServer:
                 sys.exit(1)
 
     def init_routing_table(self):
-        # initialize routing table: for each known server in servers set cost=INF, next_hop=-
+        # line in code where routing table is defined:
+        # DEST: { "cost": value, "next_hop": hop }  
         for sid in self.servers.keys():
             self.routing_table[sid] = {'cost': INF, 'next_hop': -1}
         # cost to self = 0
@@ -329,7 +321,6 @@ class DVServer:
                     continue
 
     def periodic_sender(self):
-        # send initial update immediately? The assignment says servers send periodically; we'll send right away then sleep
         time.sleep(self.interval)
         while not self.crashed:
             # Sleep until next interval but first send
