@@ -138,7 +138,7 @@ class DVServer:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             bind_ip = "0.0.0.0" if self.my_ip in ("0.0.0.0", "127.0.0.1", "localhost") else self.my_ip
-            self.sock.bind((bind_ip, self.my_port))
+            self.sock.bind(("0.0.0.0", self.my_port))
         except Exception as e:
             print("Failed to bind socket to {}:{} -> {}".format(self.my_ip, self.my_port, e))
             print("Trying to bind to 0.0.0.0:{}".format(self.my_port))
