@@ -21,42 +21,50 @@ def now():
     return time.time()
 
 class DVServer:
-    def __init__(self, topo_file, update_interval):
-        self.topo_file = topo_file
-        self.interval = float(update_interval)
-        # parsed from topology file
-        self.servers = {}         # server_id -> {'ip': ip, 'port': port}
+    def __init__(self):
+        # These get set after user initializes server
+        self.topo_file = None
+        self.interval = None
+
+        # Core data structures
+        self.servers = {}
         self.my_id = None
         self.my_ip = None
         self.my_port = None
 
-        # neighbor costs (direct links known at startup for *this* host)
-        self.neighbor_costs = {}  # neighbor_id -> cost
-        self.neighbors = set()    # neighbor ids
-
-        # routing table: dest_id -> {'cost': cost, 'next_hop': next_hop}
+        self.neighbor_costs = {}
+        self.neighbors = set()
         self.routing_table = {}
+        self.last_heard = {}
 
-        # for detecting neighbor absence
-        self.last_heard = {}      # neighbor_id -> timestamp of last DV received
-
-        # bookkeeping
         self.packets_received = 0
-        self.disable_set = set()  # neighbor ids disabled by 'disable' command
+        self.disable_set = set()
         self.crashed = False
 
-        # UDP socket
         self.sock = None
 
-        # parse topology and init
+        # Threads (created only after initialization)
+        self.listen_thread = None
+        self.periodic_thread = None
+        self.timeout_thread = None
+
+    def initialize(self):
+        if not self.topo_file or self.interval is None:
+            raise RuntimeError("Server not configured")
+
         self.parse_topology()
         self.init_socket()
         self.init_routing_table()
 
-        # threads control
-        self.listen_thread = None
-        self.periodic_thread = None
-        self.timeout_thread = None
+        # After initialization, start threads
+        self.listen_thread = threading.Thread(target=self.listener, daemon=True)
+        self.listen_thread.start()
+
+        self.periodic_thread = threading.Thread(target=self.periodic_sender, daemon=True)
+        self.periodic_thread.start()
+
+        self.timeout_thread = threading.Thread(target=self.timeout_checker, daemon=True)
+        self.timeout_thread.start()
 
     def parse_topology(self):
         with open(self.topo_file) as f:
@@ -356,8 +364,31 @@ class DVServer:
                 cmd = input().strip()
                 if not cmd:
                     continue
+
                 parts = cmd.split()
 
+                # ------- SERVER COMMAND (initializes everything) -------
+                if parts[0].lower() == "server":
+                    if len(parts) != 5 or parts[1] != "-t" or parts[3] != "-i":
+                        print(f"{cmd} ERROR: wrong arguments")
+                        continue
+
+                    self.topo_file = parts[2]
+                    self.interval = float(parts[4])
+
+                    try:
+                        self.initialize()
+                        print(f"{cmd} SUCCESS")
+                    except Exception as e:
+                        print(f"{cmd} ERROR: {e}")
+                    continue
+
+                # ------- Do not allow ANY other command before init -------
+                if self.sock is None:
+                    print("ERROR: server not initialized. Run: server -t <file> -i <interval>")
+                    continue
+
+                # ------- Existing commands below this point -------
                 if parts[0].lower() == 'update':
                     # update <server-ID1> <server-ID2> <Link Cost>
                     if len(parts) != 4:
@@ -495,14 +526,11 @@ class DVServer:
             except:
                 pass
             sys.exit(0)
-
+    
+    def start(self):
+        # only start the command loop; initialization happens inside it
+        self.command_loop()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Distance Vector server")
-    parser.add_argument('-t', dest='topo', required=True, help='topology file name')
-    parser.add_argument('-i', dest='interval', required=True, help='routing update interval in seconds')
-    args = parser.parse_args()
-
-    server = DVServer(args.topo, args.interval)
-    print(f"Server {server.my_id} starting on {server.my_ip}:{server.my_port} with interval {server.interval}s")
+    server = DVServer()
     server.start()
