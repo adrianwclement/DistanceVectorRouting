@@ -208,20 +208,18 @@ class DVServer:
             return
 
         elif msg_type == "crash":
-            # neighbor has crashed — mark all links INF and crash this server too
+            sender = msg.get("from")
+            if sender is None:
+                return
+            sender = int(sender)
+            print(f"Server {sender} has crashed")
             with LOCK:
-                for n in list(self.neighbors):
-                    self.neighbor_costs[n] = INF
-                    self.disable_set.add(n)
-                    if n in self.routing_table:
-                        self.routing_table[n]['cost'] = INF
-                        self.routing_table[n]['next_hop'] = -1
-                self.crashed = True
-            print(f"CRASH received from server {msg.get('from')}, shutting down...")
-            try:
-                self.sock.close()
-            finally:
-                os._exit(0)
+                if sender in self.neighbors:
+                    self.neighbor_costs[sender] = INF
+                    self.routing_table[sender]["cost"] = INF
+                    self.routing_table[sender]["next_hop"] = -1
+                    self.last_heard[sender] = 0 
+
 
         # Expecting JSON as per our format (normal DV packet)
         try:
