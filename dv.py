@@ -283,10 +283,13 @@ class DVServer:
         with LOCK:
             for dest, info in self.routing_table.items():
                 cost = info['cost']
-                if cost >= INF:
+                if dest in self.neighbor_costs and self.neighbor_costs[dest] >= INF:
+                    cost_field = 'inf'
+                elif cost >= INF:
                     cost_field = 'inf'
                 else:
                     cost_field = int(cost)
+
                 ip = self.servers.get(dest, {}).get('ip', '0.0.0.0')
                 port = self.servers.get(dest, {}).get('port', 0)
                 entries.append({'id': int(dest), 'ip': ip, 'port': int(port), 'cost': cost_field})
@@ -394,7 +397,6 @@ class DVServer:
                             self.last_heard.setdefault(b, now())
                             self.routing_table[b] = {'cost': cost, 'next_hop': b if cost < INF else -1}
 
-                        # NEW: send a link_update to server b
                         info = self.servers.get(b)
                         if info:
                             control = {
