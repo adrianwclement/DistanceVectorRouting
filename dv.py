@@ -330,6 +330,7 @@ class DVServer:
 
     def periodic_sender(self):
         # send initial update immediately? The assignment says servers send periodically; we'll send right away then sleep
+        time.sleep(self.interval)
         while not self.crashed:
             # Sleep until next interval but first send
             self.send_to_neighbors()
