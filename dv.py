@@ -184,8 +184,18 @@ class DVServer:
     -Direct neighbors: set to their configured link cost and next hop equal to the neighbor ID.
     """
     def init_routing_table(self):
-        # line in code where routing table is defined:
-        # DEST: { "cost": value, "next_hop": hop }  
+        # ===================== ROUTING TABLE DATA STRUCTURE =====================
+        # Routing table entry format used in my implementation.
+        # Line 189
+        #
+        # routing_table = {
+        #     destination_id: {
+        #         "cost": <int or INF>,
+        #         "next_hop": <server ID of next hop or -1>
+        #     },
+        #     ...
+        # }
+        # =========================================================================
         for sid in self.servers.keys():
             self.routing_table[sid] = {'cost': INF, 'next_hop': -1}
         # cost to self = 0
@@ -247,6 +257,14 @@ If the server has crashed, exits the loop; otherwise continues listening despite
     Updates packet counters, last_heard, and ensures IP/port information stays current
     """
     def handle_incoming(self, msg, addr):
+        # ================= CONTROL MESSAGE FORMATS =================
+        # link_update:
+        # { "type": "link_update", "from": <id>, "to": <id>, "cost": <int or "inf"> }
+        #
+        # crash:
+        # { "type": "crash", "from": <id> }
+        # ============================================================
+        
         #process link_update or crash control message BEFORE normal DV handling
         msg_type = msg.get("type")
         
@@ -376,7 +394,25 @@ If the server has crashed, exits the loop; otherwise continues listening despite
     Does not send the packet—just builds it.
     """
     def build_dv_packet(self):
-        # Build the dv as list of dicts including this server's view of each dest
+        # ===================== UPDATE MESSAGE DATA STRUCTURE =====================
+        # This is the Distance Vector update message FORMAT used in my implementation.
+        # Line 391
+        #
+        # {
+        #     "sender_id": <int>,
+        #     "sender_ip": <string>,
+        #     "sender_port": <int>,
+        #     "dv": [
+        #         {
+        #             "id": <destination server ID>,
+        #             "ip": <destination IP>,
+        #             "port": <destination port>,
+        #             "cost": <cost or "inf">
+        #         },
+        #         ...
+        #     ]
+        # }
+        # =========================================================================
         entries = []
         with LOCK:
             for dest, info in self.routing_table.items():
