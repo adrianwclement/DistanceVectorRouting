@@ -353,7 +353,6 @@ class DVServer:
                     continue
 
     def periodic_sender(self):
-        time.sleep(self.interval)
         while not self.crashed:
             # Sleep until next interval but first send
             self.send_to_neighbors()
