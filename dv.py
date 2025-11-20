@@ -40,6 +40,7 @@ class DVServer:
         self.packets_received = 0
         self.disable_set = set()
         self.crashed = False
+        self.processed_crashes = set()
 
         self.sock = None
 
@@ -208,18 +209,48 @@ class DVServer:
             return
 
         elif msg_type == "crash":
+            # A crash notification (originating server id in "from") should be flooded
+            # so all servers learn the crashed node immediately.
             sender = msg.get("from")
             if sender is None:
                 return
-            sender = int(sender)
-            print(f"Server {sender} has crashed")
-            with LOCK:
-                if sender in self.neighbors:
-                    self.neighbor_costs[sender] = INF
-                    self.routing_table[sender]["cost"] = INF
-                    self.routing_table[sender]["next_hop"] = -1
-                    self.last_heard[sender] = 0 
+            origin = int(sender)
 
+            # Avoid processing the same crash repeatedly
+            with LOCK:
+                if origin in self.processed_crashes:
+                    return
+                self.processed_crashes.add(origin)
+
+                # Mark the crashed server unreachable locally
+                # If it was a neighbor, set neighbor cost -> INF
+                if origin in self.neighbor_costs:
+                    self.neighbor_costs[origin] = INF
+                # Update routing table entry (if present)
+                if origin in self.routing_table:
+                    self.routing_table[origin]['cost'] = INF
+                    self.routing_table[origin]['next_hop'] = -1
+                # Reset last_heard so timeout logic treats it as down
+                self.last_heard[origin] = 0
+
+            print(f"server {origin} has crashed")
+
+            # Flood the crash message to all neighbors so entire network learns quickly.
+            # We intentionally forward regardless of whether origin was a direct neighbor.
+            crash_msg = {"type": "crash", "from": origin}
+            with LOCK:
+                for n in list(self.neighbors):
+                    # don't bother sending back to origin if it's a direct neighbor (optional),
+                    # but harmless if you do; processed_crashes prevents loops.
+                    info = self.servers.get(n)
+                    if not info:
+                        continue
+                    try:
+                        self.sock.sendto(json.dumps(crash_msg).encode(), (info['ip'], info['port']))
+                    except Exception:
+                        continue
+
+            return
 
         # Expecting JSON as per our format (normal DV packet)
         try:
@@ -484,6 +515,8 @@ class DVServer:
                 elif parts[0].lower() == 'crash':
                     # propagate crash to all neighbors first
                     with LOCK:
+                        # mark that we've already processed our own crash notification
+                        self.processed_crashes.add(self.my_id)
                         crash_msg = {"type": "crash", "from": self.my_id}
                         for n in list(self.neighbors):
                             info = self.servers.get(n)
@@ -506,8 +539,6 @@ class DVServer:
                         self.sock.close()
                     except:
                         pass
-                    # According to the assignment, neighboring servers must handle this close and set link cost to INF
-                    # We'll exit to simulate crash
                     sys.exit(0)
                 else:
                     print(f"{cmd} ERROR: unknown command")
