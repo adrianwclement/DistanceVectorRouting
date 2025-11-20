@@ -21,6 +21,12 @@ def now():
     return time.time()
 
 class DVServer:
+    """
+    Initializes all server state to defaults, including topology info,
+    routing table structures, neighbor lists, crash flags, counters, 
+    and placeholders for worker threads. No network operations occur here; 
+    initialization is deferred until the user issues the server command.
+    """
     def __init__(self):
         # These get set after user initializes server
         self.topo_file = None
@@ -49,6 +55,12 @@ class DVServer:
         self.periodic_thread = None
         self.timeout_thread = None
 
+    """
+    Parses the topology file, sets up the UDP socket,
+    initializes the routing table, and starts the 
+    listener thread, the periodic DV broadcast thread,
+    and the timeout detection thread
+    """
     def initialize(self):
         if not self.topo_file or self.interval is None:
             raise RuntimeError("Server not configured")
@@ -67,6 +79,12 @@ class DVServer:
         self.timeout_thread = threading.Thread(target=self.timeout_checker, daemon=True)
         self.timeout_thread.start()
 
+
+    """
+    Reads and interprets the topo files. Parses the server list, records
+    the IP/port, determines this server’s own ID and interface/port from the neighbor section,
+    extracts neighbor relationships & link costs, and initializes the last_heard timestamps
+    """
     def parse_topology(self):
         with open(self.topo_file) as f:
             lines = [
@@ -116,6 +134,9 @@ class DVServer:
         for n in self.neighbors:
             self.last_heard[n] = now_ts
 
+    """
+    Returns a set of IP addresses that are considered local to this host.
+    """
     def get_local_ips(self):
         # try to get host IP and localhost forms
         ips = {'127.0.0.1', '0.0.0.0', 'localhost'}
@@ -132,6 +153,12 @@ class DVServer:
             pass
         return ips
 
+    """
+    Creates and binds a UDP socket.
+    Attempts to bind to the server’s declared IP; if that fails, falls back to binding on 0.0.0.0:<port>.
+    Enables SO_REUSEADDR for convenience.
+    Exits the program if binding fails entirely.
+    """
     def init_socket(self):
         # Bind UDP socket to my_ip/my_port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -149,6 +176,13 @@ class DVServer:
                 print("FATAL: cannot bind socket:", e2)
                 sys.exit(1)
 
+
+    """
+    Populates the routing table with an entry for each server where each entry:
+    -Initial cost for all destinations: INF
+    - Cost to self: 0 with next_hop = self.my_id
+    -Direct neighbors: set to their configured link cost and next hop equal to the neighbor ID.
+    """
     def init_routing_table(self):
         # line in code where routing table is defined:
         # DEST: { "cost": value, "next_hop": hop }  
@@ -161,6 +195,10 @@ class DVServer:
         for n, c in self.neighbor_costs.items():
             self.routing_table[int(n)] = {'cost': c, 'next_hop': int(n)}
 
+    """
+    Starts the background threads for listening, periodic sending, and timeout checking, then enters the interactive command loop.
+    Superseded by the later start() definition.
+    """
     def start(self):
         # spawn threads
         self.listen_thread = threading.Thread(target=self.listener, daemon=True)
@@ -173,6 +211,11 @@ class DVServer:
         # enter command loop
         self.command_loop()
 
+    """
+    Listens indefinitely for incoming UDP packets.
+For each received datagram, attempts to decode JSON and dispatches it to handle_incoming().
+If the server has crashed, exits the loop; otherwise continues listening despite exceptions.
+    """
     def listener(self):
         while True:
             try:
@@ -188,8 +231,23 @@ class DVServer:
                 # otherwise continue listening
                 continue
 
+    """
+    Processes all inbound messages.
+
+    Handles three message types:
+
+    link_update
+    Updates the local link cost to the sender and adjusts neighbor and routing table state.
+
+    crash
+    Marks the sender as unreachable by setting its link cost and routing entry to INF.
+
+    Normal DV packet
+    Extracts the sender’s distance vector and performs Bellman-Ford relaxation on each destination.
+    Updates packet counters, last_heard, and ensures IP/port information stays current
+    """
     def handle_incoming(self, msg, addr):
-        # NEW: process link_update or crash control message BEFORE normal DV handling
+        #process link_update or crash control message BEFORE normal DV handling
         msg_type = msg.get("type")
         
         if msg_type == "link_update":
@@ -307,7 +365,16 @@ class DVServer:
         # End handle_incoming
         return
 
+    """
+    Constructs a JSON-serializable dictionary containing:
 
+    this server’s ID, IP, and port
+
+    a list of all known destinations and costs as viewed by the routing table
+
+    Converts infinite costs to "inf" strings.
+    Does not send the packet—just builds it.
+    """
     def build_dv_packet(self):
         # Build the dv as list of dicts including this server's view of each dest
         entries = []
@@ -332,6 +399,11 @@ class DVServer:
             }
         return packet
 
+    """
+    Broadcasts the locally computed DV packet to all neighbors except those marked disabled.
+    Ignores send errors silently.
+    Does nothing if the server is crashed.
+    """
     def send_to_neighbors(self):
         if self.crashed:
             return
@@ -352,12 +424,25 @@ class DVServer:
                     # ignore send errors
                     continue
 
+    """
+    Sends a full DV update to all neighbors
+
+    sleeps for the configured interval
+
+    Runs in its own thread until the server crashes
+    """
     def periodic_sender(self):
         while not self.crashed:
             # Sleep until next interval but first send
             self.send_to_neighbors()
             time.sleep(self.interval)
 
+    """
+    Detects neighbor failures.
+    Every interval, checks whether each neighbor has been heard from within 3 * interval.
+    If not, marks that neighbor’s link as INF and invalidates its routing table entry.
+    Does not automatically trigger DV broadcasts.
+    """
     def timeout_checker(self):
         # check for neighbors that have not been heard for 3 consecutive intervals -> set their link cost to INF
         threshold = 3 * self.interval
@@ -380,6 +465,29 @@ class DVServer:
             # we do not automatically broadcast changed info (assignment: updates only periodic or on step)
             # loop continues
 
+
+    """
+    Implements the interactive CLI for the router.
+    Commands include:
+
+    server -t <file> -i <interval> — initialize server
+
+    update <A> <B> <cost> — modify link cost and notify the peer
+
+    step — send DV immediately
+
+    packets — print and reset received packet count
+
+    display — print routing table
+
+    disable <id> — disable a neighbor link
+
+    crash — broadcast crash notification, invalidate all links, exit
+
+    Unknown commands return an error.
+
+    Continues until EOF or interrupt.
+    """
     def command_loop(self):
         # main interactive loop
         try:
@@ -495,29 +603,30 @@ class DVServer:
                             print(f"{dest} {next_hop} {cost_str}")
 
                 elif parts[0].lower() == 'disable':
-                    # disable <server-ID> : check if the given server is its neighbor
+                   # disable <server-ID> : must update both sides
                     if len(parts) != 2:
                         print(f"{cmd} ERROR: wrong arguments")
                         continue
                     x = int(parts[1])
                     with LOCK:
                         if x in self.neighbors:
+                            # local disable
                             self.disable_set.add(x)
                             self.neighbor_costs[x] = INF
                             if x in self.routing_table:
                                 self.routing_table[x]['cost'] = INF
                                 self.routing_table[x]['next_hop'] = -1
 
+                            # send remote disable command
                             info = self.servers.get(x)
                             if info:
-                                control = {
-                                    "type": "link_update",
+                                disable_msg = {
+                                    "type": "disable",
                                     "from": self.my_id,
-                                    "to": x,
-                                    "cost": "inf"
+                                    "to": x
                                 }
                                 try:
-                                    self.sock.sendto(json.dumps(control).encode(), (info["ip"], info["port"]))
+                                    self.sock.sendto(json.dumps(disable_msg).encode(), (info["ip"], info["port"]))
                                 except:
                                     pass
 
