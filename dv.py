@@ -507,6 +507,20 @@ class DVServer:
                             if x in self.routing_table:
                                 self.routing_table[x]['cost'] = INF
                                 self.routing_table[x]['next_hop'] = -1
+
+                            info = self.servers.get(x)
+                            if info:
+                                control = {
+                                    "type": "link_update",
+                                    "from": self.my_id,
+                                    "to": x,
+                                    "cost": "inf"
+                                }
+                                try:
+                                    self.sock.sendto(json.dumps(control).encode(), (info["ip"], info["port"]))
+                                except:
+                                    pass
+
                             print(f"{cmd} SUCCESS")
                         else:
                             print(f"{cmd} ERROR: {x} is not a neighbor")
